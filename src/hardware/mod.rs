@@ -17,6 +17,8 @@ mod digital_input_stamper;
 mod eeprom;
 pub mod pounder;
 mod timers;
+#[cfg(feature = "uart-log")]
+mod uart_log;
 
 pub use adc::{Adc0Input, Adc1Input};
 pub use afe::Gain as AfeGain;
@@ -51,6 +53,10 @@ pub use configuration::{setup, PounderDevices, StabilizerDevices};
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     let gpiod = unsafe { &*hal::stm32::GPIOD::ptr() };
     gpiod.odr.modify(|_, w| w.odr6().high().odr12().high()); // FP_LED_1, FP_LED_3
+
+    #[cfg(feature = "uart-log")]
+    error!("{}", _info);
+
     #[cfg(feature = "nightly")]
     core::intrinsics::abort();
     #[cfg(not(feature = "nightly"))]

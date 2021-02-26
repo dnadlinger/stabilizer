@@ -140,6 +140,41 @@ pub fn setup(
     let gpiof = device.GPIOF.split(ccdr.peripheral.GPIOF);
     let mut gpiog = device.GPIOG.split(ccdr.peripheral.GPIOG);
 
+    #[cfg(feature = "uart-log")]
+    {
+        let uart = {
+            let tx = gpiod
+                .pd8
+                .into_push_pull_output()
+                .set_speed(hal::gpio::Speed::High)
+                .into_alternate_af7();
+            let rx = gpiod.pd9.into_alternate_af7();
+            device
+                .USART3
+                .serial(
+                    (tx, rx),
+                    1_000_000.bps(),
+                    ccdr.peripheral.USART3,
+                    &ccdr.clocks,
+                )
+                .unwrap()
+        };
+
+        let (tx, _rx) = uart.split();
+
+        use cortex_m_log::log::{init as init_log, Logger};
+        use cortex_m_log::modes::InterruptOk;
+        use log::LevelFilter;
+        use super::uart_log::UartPrinter;
+        static mut LOGGER: Option<Logger<UartPrinter<InterruptOk>>> = None;
+        let logger = Logger {
+            inner: UartPrinter::new(tx),
+            level: LevelFilter::Debug,
+        };
+        let logger = unsafe { LOGGER.get_or_insert(logger) };
+        init_log(logger).unwrap();
+    }
+
     let dma_streams =
         hal::dma::dma::StreamsTuple::new(device.DMA1, ccdr.peripheral.DMA1);
 
