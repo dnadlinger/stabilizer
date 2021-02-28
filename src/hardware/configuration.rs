@@ -19,18 +19,23 @@ use super::{
 
 pub struct NetStorage {
     pub ip_addrs: [smoltcp::wire::IpCidr; 1],
-    pub sockets: [Option<smoltcp::socket::SocketSetItem<'static>>; 1],
+    pub sockets: [Option<smoltcp::socket::SocketSetItem<'static>>; 2],
     pub neighbor_cache:
-        [Option<(smoltcp::wire::IpAddress, smoltcp::iface::Neighbor)>; 8],
+        [Option<(smoltcp::wire::IpAddress, smoltcp::iface::Neighbor)>; 32],
     pub routes_cache:
         [Option<(smoltcp::wire::IpCidr, smoltcp::iface::Route)>; 8],
     pub tx_storage: [u8; 4096],
     pub rx_storage: [u8; 4096],
+    pub dhcp_tx_storage: [u8; 900],
+    pub dhcp_rx_storage: [u8; 900],
+    pub dhcp_rx_metadata: [smoltcp::socket::RawPacketMetadata; 1],
+    pub dhcp_tx_metadata: [smoltcp::socket::RawPacketMetadata; 1],
 }
 
 /// The available networking devices on Stabilizer.
 pub struct NetworkDevices {
     pub stack: NetworkStack,
+    pub dhcpv4: Option<smoltcp::dhcp::Dhcpv4Client>,
     pub phy: ethernet::phy::LAN8742A<ethernet::EthernetMAC>,
 }
 
@@ -67,12 +72,17 @@ static mut NET_STORE: NetStorage = NetStorage {
     ip_addrs: [smoltcp::wire::IpCidr::Ipv6(
         smoltcp::wire::Ipv6Cidr::SOLICITED_NODE_PREFIX,
     )],
-    neighbor_cache: [None; 8],
+    neighbor_cache: [None; 32],
     routes_cache: [None; 8],
-    sockets: [None; 1],
+    sockets: [None, None],
 
     tx_storage: [0; 4096],
     rx_storage: [0; 4096],
+
+    dhcp_tx_storage: [0; 900],
+    dhcp_rx_storage: [0; 900],
+    dhcp_rx_metadata: [smoltcp::socket::RawPacketMetadata::EMPTY; 1],
+    dhcp_tx_metadata: [smoltcp::socket::RawPacketMetadata::EMPTY; 1],
 };
 
 /// Configure the stabilizer hardware for operation.
@@ -162,14 +172,14 @@ pub fn setup(
 
         let (tx, _rx) = uart.split();
 
+        use super::uart_log::UartPrinter;
         use cortex_m_log::log::{init as init_log, Logger};
         use cortex_m_log::modes::InterruptOk;
         use log::LevelFilter;
-        use super::uart_log::UartPrinter;
         static mut LOGGER: Option<Logger<UartPrinter<InterruptOk>>> = None;
         let logger = Logger {
             inner: UartPrinter::new(tx),
-            level: LevelFilter::Debug,
+            level: LevelFilter::Trace,
         };
         let logger = unsafe { LOGGER.get_or_insert(logger) };
         init_log(logger).unwrap();
@@ -529,6 +539,10 @@ pub fn setup(
         Ok(raw_mac) => smoltcp::wire::EthernetAddress(raw_mac),
     };
 
+    info!("MAC address: {}", mac_addr);
+
+    let mut cycle_counter = CycleCounter::new(core.DWT, ccdr.clocks.c_ck());
+
     let network_devices = {
         // Configure the ethernet controller
         let (eth_dma, eth_mac) = unsafe {
@@ -553,15 +567,30 @@ pub fn setup(
 
         let store = unsafe { &mut NET_STORE };
 
-        store.ip_addrs[0] = smoltcp::wire::IpCidr::new(
-            smoltcp::wire::IpAddress::v4(10, 34, 16, 103),
-            24,
-        );
+        // This is a runtime parameter in anticipation for it being read from flash/...
+        let use_dhcp = cfg!(feature = "dhcpv4");
 
-        let default_v4_gw = smoltcp::wire::Ipv4Address::new(10, 34, 16, 1);
         let mut routes =
             smoltcp::iface::Routes::new(&mut store.routes_cache[..]);
-        routes.add_default_ipv4_route(default_v4_gw).unwrap();
+
+        if use_dhcp {
+            info!("Using DHCP");
+            store.ip_addrs[0] = smoltcp::wire::IpCidr::new(
+                smoltcp::wire::Ipv4Address::UNSPECIFIED.into(),
+                0,
+            );
+        } else {
+            let local_addr = smoltcp::wire::IpCidr::new(
+                smoltcp::wire::IpAddress::v4(10, 34, 16, 103),
+                24,
+            );
+
+            info!("Using static IP address: {}", local_addr);
+            store.ip_addrs[0] = local_addr;
+
+            let default_v4_gw = smoltcp::wire::Ipv4Address::new(10, 34, 16, 1);
+            routes.add_default_ipv4_route(default_v4_gw).unwrap();
+        }
 
         let neighbor_cache =
             smoltcp::iface::NeighborCache::new(&mut store.neighbor_cache[..]);
@@ -601,8 +630,35 @@ pub fn setup(
             sockets
         };
 
+        let stack = smoltcp_nal::NetworkStack::new(interface, sockets);
+
+        let dhcpv4 = if use_dhcp {
+            use smoltcp::socket::RawSocketBuffer;
+            // Note(unsafe): Configuration is only called once, so we only access the global
+            // storage a single time.
+            let dhcp_rx_buffer = RawSocketBuffer::new(
+                unsafe { &mut NET_STORE.dhcp_rx_metadata[..] },
+                unsafe { &mut NET_STORE.dhcp_rx_storage[..] },
+            );
+            let dhcp_tx_buffer = RawSocketBuffer::new(
+                unsafe { &mut NET_STORE.dhcp_tx_metadata[..] },
+                unsafe { &mut NET_STORE.dhcp_tx_storage[..] },
+            );
+            let now =
+                smoltcp::time::Instant::from_millis(cycle_counter.current_ms());
+            Some(smoltcp::dhcp::Dhcpv4Client::new(
+                &mut stack.sockets.borrow_mut(),
+                dhcp_rx_buffer,
+                dhcp_tx_buffer,
+                now,
+            ))
+        } else {
+            None
+        };
+
         NetworkDevices {
-            stack: smoltcp_nal::NetworkStack::new(interface, sockets),
+            stack,
+            dhcpv4,
             phy: lan8742a,
         }
     };
@@ -868,7 +924,7 @@ pub fn setup(
         net: network_devices,
         adc_dac_timer: sampling_timer,
         timestamp_timer,
-        cycle_counter: CycleCounter::new(core.DWT, ccdr.clocks.c_ck()),
+        cycle_counter,
     };
 
     // info!("Version {} {}", build_info::PKG_VERSION, build_info::GIT_VERSION.unwrap());

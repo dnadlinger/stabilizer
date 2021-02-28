@@ -56,6 +56,10 @@ branch = "develop"
 git = "https://github.com/rust-embedded-community/serde-json-core.git"
 branch = "master"
 
+[patch.crates-io.smoltcp-nal]
+git = "https://github.com/dnadlinger/smoltcp-nal.git"
+branch = "public-interface-sockets"
+
 [dependencies.mcp23017]
 git = "https://github.com/mrd0ll4r/mcp23017.git"
 
@@ -64,10 +68,16 @@ features = ["stm32h743v", "rt", "unproven", "ethernet", "quadspi"]
 git = "https://github.com/stm32-rs/stm32h7xx-hal"
 branch = "master"
 
+[dependencies.smoltcp]
+version = "0.7"
+features = ["ethernet", "proto-dhcpv4", "proto-ipv4", "proto-ipv6", "socket-tcp", "log", "verbose"]
+default-features = false
+
 [features]
 semihosting = ["panic-semihosting", "cortex-m-log/semihosting"]
 bkpt = [ ]
 uart-log = [ ]
+dhcpv4 = [ ]
 nightly = ["cortex-m/inline-asm", "dsp/nightly"]
 pounder_v1_1 = [ ]
 

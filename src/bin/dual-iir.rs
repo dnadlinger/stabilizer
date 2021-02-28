@@ -6,6 +6,7 @@ use stm32h7xx_hal as hal;
 
 use stabilizer::hardware;
 
+use log::{error, info};
 use miniconf::{
     embedded_nal::{IpAddr, Ipv4Addr},
     minimq, MqttInterface, StringSet,
@@ -46,6 +47,7 @@ const APP: () = {
         dacs: (Dac0Output, Dac1Output),
         mqtt_interface:
             MqttInterface<Settings, NetworkStack, minimq::consts::U256>,
+        dhcpv4: Option<smoltcp::dhcp::Dhcpv4Client>,
         clock: CycleCounter,
 
         // Format: iir_state[ch][cascade-no][coeff]
@@ -90,6 +92,7 @@ const APP: () = {
             adcs: stabilizer.adcs,
             dacs: stabilizer.dacs,
             clock: stabilizer.cycle_counter,
+            dhcpv4: stabilizer.net.dhcpv4,
         }
     }
 
@@ -138,23 +141,80 @@ const APP: () = {
         }
     }
 
-    #[idle(resources=[mqtt_interface, clock], spawn=[settings_update])]
-    fn idle(mut c: idle::Context) -> ! {
-        let clock = c.resources.clock;
-
+    #[idle(resources=[mqtt_interface, clock, dhcpv4], spawn=[settings_update])]
+    fn idle(c: idle::Context) -> ! {
+        info!("Initialization completed; running idle task...");
+        let current_ms = c.resources.clock.current_ms();
+        let mut interface = c.resources.mqtt_interface;
+        let dhcpv4 = c.resources.dhcpv4;
         loop {
-            let sleep = c.resources.mqtt_interface.lock(|interface| {
-                !interface.network_stack().poll(clock.current_ms())
+            let sleep = interface.lock(|interface| {
+                let stack = interface.network_stack();
+                let sleep = !stack.poll(current_ms);
+
+                dhcpv4.as_mut().map(|dhcp| {
+                    let mut iface = stack.network_interface.borrow_mut();
+
+                    let dhcp_cfg = dhcp
+                        .poll(
+                            &mut *iface,
+                            &mut stack.sockets.borrow_mut(),
+                            smoltcp::time::Instant::from_millis(current_ms),
+                        )
+                        .unwrap_or_else(|e| {
+                            error!("DHCP: {:?}", e);
+                            None
+                        });
+
+                    dhcp_cfg.map(|dhcp_cfg| {
+                        info!("DHCP config: {:?}", dhcp_cfg);
+                        if let Some(cidr) = dhcp_cfg.address {
+                            iface.update_ip_addrs(|addrs| {
+                                addrs.iter_mut().next().map(|addr| {
+                                    *addr = smoltcp::wire::IpCidr::Ipv4(cidr);
+                                });
+                            });
+                            info!("Assigned IPv4 address: {}", cidr);
+                        }
+
+                        dhcp_cfg.router.map(|router| {
+                            iface
+                                .routes_mut()
+                                .add_default_ipv4_route(router)
+                                .unwrap()
+                        });
+                        iface.routes_mut().update(|routes_map| {
+                            routes_map
+                                .get(&smoltcp::wire::IpCidr::new(
+                                    smoltcp::wire::Ipv4Address::UNSPECIFIED.into(),
+                                    0,
+                                ))
+                                .map(|default_route| {
+                                    info!(
+                                        "Default gateway: {}",
+                                        default_route.via_router
+                                    );
+                                });
+                        });
+                        if dhcp_cfg.dns_servers.iter().any(|s| s.is_some()) {
+                            info!("DNS servers:");
+                            for dns_server in
+                                dhcp_cfg.dns_servers.iter().filter_map(|s| *s)
+                            {
+                                info!("- {}", dns_server);
+                            }
+                        }
+                    });
+                });
+
+                sleep // TODO: DHCP next_poll?
             });
 
-            match c
-                .resources
-                .mqtt_interface
-                .lock(|interface| interface.update().unwrap())
+            match interface.lock(|interface| interface.update().unwrap())
             {
                 miniconf::Action::Continue => {
                     if sleep {
-                        cortex_m::asm::wfi();
+                        // cortex_m::asm::wfi();
                     }
                 }
                 miniconf::Action::CommitSettings => {
