@@ -529,6 +529,8 @@ pub fn setup(
         Ok(raw_mac) => smoltcp::wire::EthernetAddress(raw_mac),
     };
 
+    info!("MAC address: {}", mac_addr);
+
     let network_devices = {
         // Configure the ethernet controller
         let (eth_dma, eth_mac) = unsafe {
@@ -557,6 +559,8 @@ pub fn setup(
             smoltcp::wire::IpAddress::v4(10, 179, 22, 48),
             22,
         );
+
+        info!("IP address: {}", store.ip_addrs[0]);
 
         let default_v4_gw = smoltcp::wire::Ipv4Address::new(10, 179, 23, 254);
         let mut routes =
