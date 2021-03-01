@@ -80,16 +80,16 @@ const APP: () = {
 
         let mqtt_interface = {
             let mqtt_client = {
-                let broker = IpAddr::V4(Ipv4Addr::new(10, 34, 16, 1));
+                let broker = IpAddr::V4(Ipv4Addr::new(10, 255, 6, 4));
                 minimq::MqttClient::new(
                     broker,
-                    "stabilizer",
+                    "stabilizer674",
                     stabilizer.net.stack,
                 )
                 .unwrap()
             };
 
-            MqttInterface::new(mqtt_client, "stabilizer", Settings::default())
+            MqttInterface::new(mqtt_client, "dt/sinara/stabilizer/l674", Settings::default())
                 .unwrap()
         };
 
