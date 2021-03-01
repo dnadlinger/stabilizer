@@ -605,8 +605,11 @@ pub fn setup(
             sockets
         };
 
+        let mut rng = device.RNG.constrain(ccdr.peripheral.RNG, &ccdr.clocks);
+        let port_offset: u16 = rng.gen().unwrap();
+
         NetworkDevices {
-            stack: smoltcp_nal::NetworkStack::new(interface, sockets),
+            stack: smoltcp_nal::NetworkStack::new(interface, sockets, Some(port_offset)),
             phy: lan8742a,
         }
     };
