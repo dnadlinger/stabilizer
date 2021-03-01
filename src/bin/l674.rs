@@ -12,6 +12,7 @@ use stm32h7xx_hal as hal;
 
 use stabilizer::hardware;
 
+use log::{info, warn};
 use miniconf::{
     embedded_nal::{IpAddr, Ipv4Addr},
     minimq, MqttInterface, StringSet,
@@ -173,6 +174,8 @@ const APP: () = {
 
     #[idle(resources=[mqtt_interface, clock], spawn=[settings_update])]
     fn idle(mut c: idle::Context) -> ! {
+        info!("Starting idle task...");
+
         let clock = c.resources.clock;
 
         loop {
@@ -183,16 +186,19 @@ const APP: () = {
             match c
                 .resources
                 .mqtt_interface
-                .lock(|interface| interface.update().unwrap())
+                .lock(|interface| interface.update())
             {
-                miniconf::Action::Continue => {
+                Ok(miniconf::Action::Continue) => {
                     if sleep {
                         cortex_m::asm::wfi();
                     }
-                }
-                miniconf::Action::CommitSettings => {
+                },
+                Ok(miniconf::Action::CommitSettings) => {
                     c.spawn.settings_update().unwrap()
-                }
+                },
+                Err(e) => {
+                    warn!("Miniconf update failure: {:?}", e)
+                },
             }
         }
     }
