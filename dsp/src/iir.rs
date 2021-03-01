@@ -2,7 +2,8 @@ use miniconf::StringSet;
 use serde::Deserialize;
 
 use super::{abs, copysign, macc, max, min};
-use core::f32;
+use core::f32::{self, consts::PI};
+use libm::{cos, tan};
 
 /// IIR state and coefficients type.
 ///
@@ -57,6 +58,13 @@ impl IIR {
         }
     }
 
+    /// Configures IIR filter coefficients for a trivial pass-through response
+    /// with the given scaling factor.
+    pub fn set_scale(&mut self, gain: f32) -> Result<(), &str> {
+        self.ba.copy_from_slice(&[gain, 0.0, 0.0, 0.0, 0.0]);
+        Ok(())
+    }
+
     /// Configures IIR filter coefficients for proportional-integral behavior
     /// with gain limit.
     ///
@@ -85,6 +93,28 @@ impl IIR {
             (a1, b0, b1)
         };
         self.ba.copy_from_slice(&[b0, b1, 0., a1, 0.]);
+        Ok(())
+    }
+
+    /// Configures IIR filter coefficients for notch filter behaviour.
+    ///
+    /// # Arguments
+    ///
+    /// * `f0` - Center frequency, in units of half the sample frequency.
+    /// * `q` - Filter quality factor.
+    pub fn set_notch(&mut self, f0: f32, q: f32) -> Result<(), &str> {
+        // IIR notch design as per scipy.signals/Orfandis (1996), p. 575 ff.
+        if f0 < 0.0 || f0 > 1.0 {
+            return Err("Frequency out of bounds 0 < f0 < 1.0");
+        }
+
+        let w0 = PI * f0;
+        let bw = w0 / q;
+        let beta = tan((bw / 2.0).into()) as f32;
+        let gain = 1.0 / (1.0 + beta);
+        let pf = 2.0 * cos(w0.into()) as f32;
+        self.ba
+            .copy_from_slice(&[1.0, -pf, 1.0, gain * pf, 1.0 - 2.0 * gain]);
         Ok(())
     }
 

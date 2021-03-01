@@ -27,28 +27,60 @@ use hardware::{
 
 const SCALE: f32 = i16::MAX as _;
 
-// The number of cascaded IIR biquads per channel. Select 1 or 2!
 const IIR_CASCADE_LENGTH: usize = 2;
 
 #[derive(Clone, Copy, Debug, Deserialize, StringSet)]
 pub enum ADC1Routing {
     Ignore,
     SumWithADC0,
-    SumWithIIR0Output
+    SumWithIIR0Output,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, StringSet)]
+pub enum LockMode {
+    Disabled,
+    RampPassThrough,
+    Enabled,
+}
+
+#[derive(Debug, Default, Deserialize, StringSet)]
+pub struct Gains {
+    proportional: f32,
+    integral: f32,
+}
+
+#[derive(Debug, Default, Deserialize, StringSet)]
+pub struct Notch {
+    frequency: f32,
+    quality_factor: f32,
 }
 
 #[derive(Debug, Deserialize, StringSet)]
 pub struct Settings {
+    lock_mode: LockMode,
+
+    fast_gains: Gains,
+
+    fast_notch: Notch,
+    fast_notch_enable: bool,
+
+    slow_gains: Gains,
+    slow_enable: bool,
+
     afe: [AfeGain; 2],
-    iir_ch: [[iir::IIR; IIR_CASCADE_LENGTH]; 2],
     adc1_routing: ADC1Routing,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            lock_mode: LockMode::Disabled,
+            fast_gains: Default::default(),
+            fast_notch: Default::default(),
+            fast_notch_enable: false,
+            slow_gains: Default::default(),
+            slow_enable: false,
             afe: [AfeGain::G1, AfeGain::G1],
-            iir_ch: [[iir::IIR::new(1., -SCALE, SCALE); IIR_CASCADE_LENGTH]; 2],
             adc1_routing: ADC1Routing::Ignore,
         }
     }
@@ -90,8 +122,12 @@ const APP: () = {
                 .unwrap()
             };
 
-            MqttInterface::new(mqtt_client, "dt/sinara/stabilizer/l674", Settings::default())
-                .unwrap()
+            MqttInterface::new(
+                mqtt_client,
+                "dt/sinara/stabilizer/l674",
+                Settings::default(),
+            )
+            .unwrap()
         };
 
         // Enable ADC/DAC events
@@ -153,20 +189,25 @@ const APP: () = {
             let mut x = f32::from(adc_samples[0][sample_idx] as i16);
             if let ADC1Routing::SumWithADC0 = c.resources.adc1_routing {
                 x += adc1;
-               }
+            }
 
             let y0 = {
-                let mut y = c.resources.iir_ch[0][0].update(&mut c.resources.iir_state[0][0], x);
-                if let ADC1Routing::SumWithIIR0Output = c.resources.adc1_routing {
+                let mut y = c.resources.iir_ch[0][0]
+                    .update(&mut c.resources.iir_state[0][0], x);
+                if let ADC1Routing::SumWithIIR0Output = c.resources.adc1_routing
+                {
                     y += adc1;
                 }
-                c.resources.iir_ch[0][1].update(&mut c.resources.iir_state[0][1], y)
+                c.resources.iir_ch[0][1]
+                    .update(&mut c.resources.iir_state[0][1], y)
             };
             dac_samples[0][sample_idx] = to_dac(y0);
 
             let y1 = {
-                let y = c.resources.iir_ch[1][0].update(&mut c.resources.iir_state[1][0], y0);
-                c.resources.iir_ch[1][1].update(&mut c.resources.iir_state[1][1], y)
+                let y = c.resources.iir_ch[1][0]
+                    .update(&mut c.resources.iir_state[1][0], y0);
+                c.resources.iir_ch[1][1]
+                    .update(&mut c.resources.iir_state[1][1], y)
             };
             dac_samples[1][sample_idx] = to_dac(y1);
         }
@@ -175,6 +216,9 @@ const APP: () = {
     #[idle(resources=[mqtt_interface, clock], spawn=[settings_update])]
     fn idle(mut c: idle::Context) -> ! {
         info!("Starting idle task...");
+
+        c.spawn.settings_update().unwrap();
+        info!("Initial settings written.");
 
         let clock = c.resources.clock;
 
@@ -188,17 +232,16 @@ const APP: () = {
                 .mqtt_interface
                 .lock(|interface| interface.update())
             {
-                Ok(miniconf::Action::Continue) => {
-                    if sleep {
+                Ok(updated) => {
+                    if updated {
+                        c.spawn.settings_update().unwrap()
+                    } else if sleep {
                         cortex_m::asm::wfi();
                     }
-                },
-                Ok(miniconf::Action::CommitSettings) => {
-                    c.spawn.settings_update().unwrap()
-                },
+                }
                 Err(e) => {
                     warn!("Miniconf update failure: {:?}", e)
-                },
+                }
             }
         }
     }
@@ -206,10 +249,78 @@ const APP: () = {
     #[task(priority = 1, resources=[mqtt_interface, afes, iir_ch, adc1_routing])]
     fn settings_update(mut c: settings_update::Context) {
         let settings = &c.resources.mqtt_interface.settings;
-        c.resources.iir_ch.lock(|iir| *iir = settings.iir_ch);
+
+        let clk: hal::time::MegaHertz =
+            hardware::design_parameters::TIMER_FREQUENCY;
+        let sample_freq = (clk.0 as f32) * 1.0e6
+            / (hardware::design_parameters::ADC_SAMPLE_TICKS as f32);
+        let freq_factor = 2.0 / sample_freq;
+
+        c.resources.iir_ch.lock(|iir| {
+            match settings.lock_mode {
+                LockMode::Disabled => {
+                    iir[0][0].set_pi(0.0, 0.0, 0.0).unwrap();
+                    iir[1][0].set_pi(0.0, 0.0, 0.0).unwrap();
+                }
+                LockMode::RampPassThrough => {
+                    // Gain 5 gives approximately ±10 V when driven using the
+                    // Vescent servo box ramp.
+                    iir[0][0].set_pi(5.0, 0.0, 0.0).unwrap();
+                    iir[1][0].set_pi(0.0, 0.0, 0.0).unwrap();
+                }
+                LockMode::Enabled => {
+                    // Negative sign in fast branch to match AOM lock; both PZTs
+                    // have same sign.
+                    iir[0][0]
+                        .set_pi(
+                            -settings.fast_gains.proportional,
+                            settings.fast_gains.integral,
+                            0.0,
+                        )
+                        .unwrap();
+                    iir[1][0]
+                        .set_pi(
+                            settings.slow_gains.proportional,
+                            settings.slow_gains.integral,
+                            0.0,
+                        )
+                        .unwrap();
+                }
+            }
+        });
+
+        c.resources.iir_ch.lock(|iir| {
+            if settings.fast_notch_enable {
+                iir[0][1]
+                    .set_notch(
+                        freq_factor * settings.fast_notch.frequency,
+                        settings.fast_notch.quality_factor,
+                    )
+                    .unwrap();
+            } else {
+                iir[0][1].set_scale(1.0).unwrap();
+            }
+        });
+
+        c.resources.iir_ch.lock(|iir| {
+            // Second IIR on slow PZT unused - optional low-pass filter?
+            iir[1][1].set_scale(1.0).unwrap();
+        });
+
+        let iir = c.resources.iir_ch.lock(|iir| *iir);
+        {
+            info!("IIR settings:");
+            info!(" [0][0]: {:?}", iir[0][0]);
+            info!(" [0][1]: {:?}", iir[0][1]);
+            info!(" [1][0]: {:?}", iir[1][0]);
+            info!(" [1][1]: {:?}", iir[1][1]);
+        }
+
         c.resources.afes.0.set_gain(settings.afe[0]);
         c.resources.afes.1.set_gain(settings.afe[1]);
-        c.resources.adc1_routing.lock(|r| *r = settings.adc1_routing);
+        c.resources
+            .adc1_routing
+            .lock(|r| *r = settings.adc1_routing);
     }
 
     #[task(binds = ETH, priority = 1)]
