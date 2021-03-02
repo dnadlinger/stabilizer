@@ -21,7 +21,7 @@ pub struct NetStorage {
     pub ip_addrs: [smoltcp::wire::IpCidr; 1],
     pub sockets: [Option<smoltcp::socket::SocketSetItem<'static>>; 1],
     pub neighbor_cache:
-        [Option<(smoltcp::wire::IpAddress, smoltcp::iface::Neighbor)>; 8],
+        [Option<(smoltcp::wire::IpAddress, smoltcp::iface::Neighbor)>; 32],
     pub routes_cache:
         [Option<(smoltcp::wire::IpCidr, smoltcp::iface::Route)>; 8],
     pub tx_storage: [u8; 4096],
@@ -55,6 +55,14 @@ pub struct PounderDevices {
     pub timestamper: pounder::timestamp::Timestamper,
 }
 
+/// The GPIO pins available on the EEM connector, if Pounder is not present.
+pub struct EemGpioDevices {
+    pub lvds4: hal::gpio::gpiod::PD1<hal::gpio::Input<hal::gpio::Floating>>,
+    pub lvds5: hal::gpio::gpiod::PD2<hal::gpio::Input<hal::gpio::Floating>>,
+    pub lvds6: hal::gpio::gpiod::PD3<hal::gpio::Output<hal::gpio::PushPull>>,
+    pub lvds7: hal::gpio::gpiod::PD4<hal::gpio::Output<hal::gpio::PushPull>>,
+}
+
 #[link_section = ".sram3.eth"]
 /// Static storage for the ethernet DMA descriptor ring.
 static mut DES_RING: ethernet::DesRing = ethernet::DesRing::new();
@@ -67,7 +75,7 @@ static mut NET_STORE: NetStorage = NetStorage {
     ip_addrs: [smoltcp::wire::IpCidr::Ipv6(
         smoltcp::wire::Ipv6Cidr::SOLICITED_NODE_PREFIX,
     )],
-    neighbor_cache: [None; 8],
+    neighbor_cache: [None; 32],
     routes_cache: [None; 8],
     sockets: [None; 1],
 
@@ -86,10 +94,15 @@ static mut NET_STORE: NetStorage = NetStorage {
 /// stabilizer hardware interfaces in a disabled state. `pounder` is an `Option` containing
 /// `Some(devices)` if pounder is detected, where `devices` is a `PounderDevices` structure
 /// containing all of the pounder hardware interfaces in a disabled state.
+// TODO: VariantDevices enum rather than multiple options.
 pub fn setup(
     mut core: rtic::export::Peripherals,
     device: stm32h7xx_hal::stm32::Peripherals,
-) -> (StabilizerDevices, Option<PounderDevices>) {
+) -> (
+    StabilizerDevices,
+    Option<PounderDevices>,
+    Option<EemGpioDevices>,
+) {
     let pwr = device.PWR.constrain();
     let vos = pwr.freeze();
 
@@ -162,10 +175,10 @@ pub fn setup(
 
         let (tx, _rx) = uart.split();
 
+        use super::uart_log::UartPrinter;
         use cortex_m_log::log::{init as init_log, Logger};
         use cortex_m_log::modes::InterruptOk;
         use log::LevelFilter;
-        use super::uart_log::UartPrinter;
         static mut LOGGER: Option<Logger<UartPrinter<InterruptOk>>> = None;
         let logger = Logger {
             inner: UartPrinter::new(tx),
@@ -609,7 +622,11 @@ pub fn setup(
         let port_offset: u16 = rng.gen().unwrap();
 
         NetworkDevices {
-            stack: smoltcp_nal::NetworkStack::new(interface, sockets, Some(port_offset)),
+            stack: smoltcp_nal::NetworkStack::new(
+                interface,
+                sockets,
+                Some(port_offset),
+            ),
             phy: lan8742a,
         }
     };
@@ -627,7 +644,7 @@ pub fn setup(
     // Measure the Pounder PGOOD output to detect if pounder is present on Stabilizer.
     let pounder_pgood = gpiob.pb13.into_pull_down_input();
     delay.delay_ms(2u8);
-    let pounder = if pounder_pgood.is_high().unwrap() {
+    let (pounder, eem_gpio) = if pounder_pgood.is_high().unwrap() {
         let ad9959 = {
             let qspi_interface = {
                 // Instantiate the QUADSPI pins and peripheral interface.
@@ -856,15 +873,26 @@ pub fn setup(
             )
         };
 
-        Some(PounderDevices {
-            pounder: pounder_devices,
-            dds_output,
+        (
+            Some(PounderDevices {
+                pounder: pounder_devices,
+                dds_output,
 
-            #[cfg(feature = "pounder_v1_1")]
-            timestamper: pounder_stamper,
-        })
+                #[cfg(feature = "pounder_v1_1")]
+                timestamper: pounder_stamper,
+            }),
+            None,
+        )
     } else {
-        None
+        (
+            None,
+            (Some(EemGpioDevices {
+                lvds4: gpiod.pd1.into_floating_input(),
+                lvds5: gpiod.pd2.into_floating_input(),
+                lvds6: gpiod.pd3.into_push_pull_output(),
+                lvds7: gpiod.pd4.into_push_pull_output(),
+            })),
+        )
     };
 
     let stabilizer = StabilizerDevices {
@@ -885,5 +913,5 @@ pub fn setup(
     // Enable the instruction cache.
     core.SCB.enable_icache();
 
-    (stabilizer, pounder)
+    (stabilizer, pounder, eem_gpio)
 }

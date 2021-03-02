@@ -15,11 +15,12 @@ use stabilizer::hardware;
 use log::{info, warn};
 use miniconf::{
     embedded_nal::{IpAddr, Ipv4Addr},
-    minimq, MqttInterface, StringSet,
+    minimq, Miniconf, MqttInterface,
 };
 use serde::Deserialize;
 
 use dsp::iir;
+use embedded_hal::digital::v2::OutputPin;
 use hardware::{
     Adc0Input, Adc1Input, AfeGain, CycleCounter, Dac0Output, Dac1Output,
     NetworkStack, AFE0, AFE1,
@@ -29,33 +30,39 @@ const SCALE: f32 = i16::MAX as _;
 
 const IIR_CASCADE_LENGTH: usize = 2;
 
-#[derive(Clone, Copy, Debug, Deserialize, StringSet)]
+#[derive(Clone, Copy, Debug, Deserialize, Miniconf)]
 pub enum ADC1Routing {
     Ignore,
     SumWithADC0,
     SumWithIIR0Output,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, StringSet)]
+#[derive(Clone, Copy, Debug, Deserialize, Miniconf)]
 pub enum LockMode {
     Disabled,
     RampPassThrough,
     Enabled,
 }
 
-#[derive(Debug, Default, Deserialize, StringSet)]
+#[derive(Debug, Default, Deserialize, Miniconf)]
 pub struct Gains {
     proportional: f32,
     integral: f32,
 }
 
-#[derive(Debug, Default, Deserialize, StringSet)]
+#[derive(Debug, Default, Deserialize, Miniconf)]
 pub struct Notch {
     frequency: f32,
     quality_factor: f32,
 }
 
-#[derive(Debug, Deserialize, StringSet)]
+#[derive(Debug, Default, Deserialize, Miniconf)]
+pub struct LockDetectConfig {
+    adc1_threshold: f32,
+    reset_time: f32,
+}
+
+#[derive(Debug, Deserialize, Miniconf)]
 pub struct Settings {
     lock_mode: LockMode,
 
@@ -67,8 +74,8 @@ pub struct Settings {
     slow_gains: Gains,
     slow_enable: bool,
 
-    afe: [AfeGain; 2],
     adc1_routing: ADC1Routing,
+    lock_detect: LockDetectConfig,
 }
 
 impl Default for Settings {
@@ -80,10 +87,17 @@ impl Default for Settings {
             fast_notch_enable: false,
             slow_gains: Default::default(),
             slow_enable: false,
-            afe: [AfeGain::G1, AfeGain::G1],
             adc1_routing: ADC1Routing::Ignore,
+            lock_detect: Default::default(),
         }
     }
+}
+
+pub struct LockDetectState {
+    decrement: u32,
+    counter: u32,
+    threshold: i16, // in units of ADC1 codes
+    pin: hal::gpio::gpiod::PD3<hal::gpio::Output<hal::gpio::PushPull>>,
 }
 
 #[rtic::app(device = stm32h7xx_hal::stm32, peripherals = true, monotonic = rtic::cyccnt::CYCCNT)]
@@ -104,12 +118,15 @@ const APP: () = {
 
         #[init(ADC1Routing::Ignore)]
         adc1_routing: ADC1Routing,
+
+        lock_detect: LockDetectState,
     }
 
     #[init]
     fn init(c: init::Context) -> init::LateResources {
         // Configure the microcontroller
-        let (mut stabilizer, _pounder) = hardware::setup(c.core, c.device);
+        let (mut stabilizer, _pounder, eem_gpio) =
+            hardware::setup(c.core, c.device);
 
         let mqtt_interface = {
             let mqtt_client = {
@@ -130,6 +147,11 @@ const APP: () = {
             .unwrap()
         };
 
+        // We hard-code gains here to save some complexity w.r.t. converting the
+        // lock detect threshold from volts to codes.
+        stabilizer.afes.0.set_gain(AfeGain::G1);
+        stabilizer.afes.1.set_gain(AfeGain::G1);
+
         // Enable ADC/DAC events
         stabilizer.adcs.0.start();
         stabilizer.adcs.1.start();
@@ -139,12 +161,27 @@ const APP: () = {
         // Start sampling ADCs.
         stabilizer.adc_dac_timer.start();
 
+        // Set up lock detect GPIO output pins, which are specific to this
+        // configuration.
+        let mut lock_detect_output = match eem_gpio {
+            Some(eem_gpio) => eem_gpio.lvds6,
+            None => panic!("Pounder detected; GPIO pins not usable."),
+        };
+        lock_detect_output.set_low().unwrap();
+        let lock_detect = LockDetectState {
+            decrement: 1,
+            counter: 0,
+            threshold: i16::MAX,
+            pin: lock_detect_output,
+        };
+
         init::LateResources {
             mqtt_interface,
             afes: stabilizer.afes,
             adcs: stabilizer.adcs,
             dacs: stabilizer.dacs,
             clock: stabilizer.cycle_counter,
+            lock_detect: lock_detect,
         }
     }
 
@@ -164,7 +201,7 @@ const APP: () = {
     ///
     /// Because the ADC and DAC operate at the same rate, these two constraints actually implement
     /// the same time bounds, meeting one also means the other is also met.
-    #[task(binds=DMA1_STR4, resources=[adcs, dacs, iir_state, iir_ch, adc1_routing], priority=2)]
+    #[task(binds=DMA1_STR4, resources=[adcs, dacs, iir_state, iir_ch, adc1_routing, lock_detect], priority=2)]
     fn process(c: process::Context) {
         let adc_samples = [
             c.resources.adcs.0.acquire_buffer(),
@@ -185,7 +222,24 @@ const APP: () = {
         }
 
         for sample_idx in 0..adc_samples[0].len() {
-            let adc1 = f32::from(adc_samples[1][sample_idx] as i16);
+            let adc1_int = adc_samples[1][sample_idx] as i16;
+
+            {
+                // Lock detect.
+                let ld = &mut *c.resources.lock_detect;
+                if adc1_int < ld.threshold {
+                    ld.pin.set_low().unwrap();
+                    ld.counter = u32::MAX;
+                } else if ld.counter > 0 {
+                    ld.counter = ld.counter.saturating_sub(ld.decrement);
+                    if ld.counter == 0 {
+                        ld.pin.set_high().unwrap();
+                    }
+                }
+            }
+
+            // Cascaded PID controllers.
+            let adc1 = f32::from(adc1_int);
             let mut x = f32::from(adc_samples[0][sample_idx] as i16);
             if let ADC1Routing::SumWithADC0 = c.resources.adc1_routing {
                 x += adc1;
@@ -246,7 +300,7 @@ const APP: () = {
         }
     }
 
-    #[task(priority = 1, resources=[mqtt_interface, afes, iir_ch, adc1_routing])]
+    #[task(priority = 1, resources=[mqtt_interface, afes, iir_ch, adc1_routing, lock_detect])]
     fn settings_update(mut c: settings_update::Context) {
         let settings = &c.resources.mqtt_interface.settings;
 
@@ -289,6 +343,41 @@ const APP: () = {
             }
         });
 
+        {
+            let threshold =
+                settings.lock_detect.adc1_threshold / 10.0 * 32768.0;
+            if threshold < -32768.0 || threshold > 32767.0 {
+                warn!("Ignoring invalid lock detect threshold: {}", threshold);
+            } else {
+                c.resources.lock_detect.lock(|state| {
+                    state.threshold = threshold as i16;
+                });
+                info!("Lock detect threshold: {}", threshold as i16);
+            }
+
+            let mut reset_samples =
+                settings.lock_detect.reset_time * sample_freq;
+            if reset_samples < 1.0 {
+                warn!(
+                    "Lock detect reset time too small, clamping: {}",
+                    settings.lock_detect.reset_time
+                );
+                reset_samples = 1.0;
+            }
+            let mut decrement = ((u32::MAX as f32) / reset_samples) as u32;
+            if decrement == 0 {
+                warn!(
+                    "Lock detect reset time too large, clamping: {}",
+                    settings.lock_detect.reset_time
+                );
+                decrement = 1;
+            }
+            c.resources.lock_detect.lock(|state| {
+                state.decrement = decrement;
+            });
+            info!("Lock detect decrement: {}", decrement);
+        }
+
         c.resources.iir_ch.lock(|iir| {
             if settings.fast_notch_enable {
                 iir[0][1]
@@ -316,8 +405,6 @@ const APP: () = {
             info!(" [1][1]: {:?}", iir[1][1]);
         }
 
-        c.resources.afes.0.set_gain(settings.afe[0]);
-        c.resources.afes.1.set_gain(settings.afe[1]);
         c.resources
             .adc1_routing
             .lock(|r| *r = settings.adc1_routing);
