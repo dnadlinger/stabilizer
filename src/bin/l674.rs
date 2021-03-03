@@ -346,12 +346,18 @@ const APP: () = {
                     LockMode::Enabled => {
                         // Negative sign in fast branch to match AOM lock; both PZTs
                         // have same sign.
+                        let fast_p = {
+                            // KLUDGE: For whatever reason, copysign()-ing the I gain
+                            // doesn't work for signed zero, so lower-bound P gain to
+                            // just above zero.
+                            let mut p = settings.fast_gains.proportional;
+                            if p == 0.0 {
+                                p = f32::MIN_POSITIVE;
+                            }
+                            p
+                        };
                         iir[0][0]
-                            .set_pi(
-                                -settings.fast_gains.proportional,
-                                settings.fast_gains.integral,
-                                0.0,
-                            )
+                            .set_pi(-fast_p, settings.fast_gains.integral, 0.0)
                             .unwrap();
                         iir[1][0]
                             .set_pi(
