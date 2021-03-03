@@ -357,12 +357,16 @@ const APP: () = {
                             p
                         };
                         iir[0][0]
-                            .set_pi(-fast_p, settings.fast_gains.integral, 0.0)
+                            .set_pi(
+                                -fast_p,
+                                freq_factor * settings.fast_gains.integral,
+                                0.0,
+                            )
                             .unwrap();
                         iir[1][0]
                             .set_pi(
                                 settings.slow_gains.proportional,
-                                settings.slow_gains.integral,
+                                freq_factor * settings.slow_gains.integral,
                                 0.0,
                             )
                             .unwrap();
