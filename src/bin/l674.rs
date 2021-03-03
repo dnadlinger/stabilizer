@@ -77,6 +77,8 @@ pub struct Settings {
 
     adc1_routing: ADC1Routing,
     lock_detect: LockDetectConfig,
+
+    aux_ttl_out: bool,
 }
 
 impl Default for Settings {
@@ -91,6 +93,7 @@ impl Default for Settings {
             slow_enable: false,
             adc1_routing: ADC1Routing::Ignore,
             lock_detect: Default::default(),
+            aux_ttl_out: false,
         }
     }
 }
@@ -131,6 +134,9 @@ const APP: () = {
         adc1_routing: ADC1Routing,
 
         lock_detect: LockDetectState,
+
+        aux_ttl_out:
+            hal::gpio::gpiod::PD4<hal::gpio::Output<hal::gpio::PushPull>>,
     }
 
     #[init]
@@ -174,8 +180,8 @@ const APP: () = {
 
         // Set up lock detect GPIO output pins, which are specific to this
         // configuration.
-        let mut lock_detect_output = match eem_gpio {
-            Some(eem_gpio) => eem_gpio.lvds6,
+        let (mut lock_detect_output, aux_ttl_out) = match eem_gpio {
+            Some(eem_gpio) => (eem_gpio.lvds6, eem_gpio.lvds7),
             None => panic!("Pounder detected; GPIO pins not usable."),
         };
         lock_detect_output.set_low().unwrap();
@@ -192,7 +198,8 @@ const APP: () = {
             adcs: stabilizer.adcs,
             dacs: stabilizer.dacs,
             clock: stabilizer.cycle_counter,
-            lock_detect: lock_detect,
+            lock_detect,
+            aux_ttl_out,
         }
     }
 
@@ -320,7 +327,7 @@ const APP: () = {
         }
     }
 
-    #[task(priority = 1, resources=[mqtt_interface, afes, iir_ch, current_mode, gain_ramp, adc1_routing, lock_detect])]
+    #[task(priority = 1, resources=[mqtt_interface, afes, iir_ch, current_mode, gain_ramp, adc1_routing, lock_detect, aux_ttl_out])]
     fn settings_update(mut c: settings_update::Context) {
         let settings = &c.resources.mqtt_interface.settings;
 
@@ -451,6 +458,12 @@ const APP: () = {
         c.resources
             .adc1_routing
             .lock(|r| *r = settings.adc1_routing);
+
+        if settings.aux_ttl_out {
+            c.resources.aux_ttl_out.set_high().unwrap();
+        } else {
+            c.resources.aux_ttl_out.set_low().unwrap();
+        }
     }
 
     #[task(binds = ETH, priority = 1)]
