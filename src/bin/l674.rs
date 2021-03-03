@@ -376,8 +376,7 @@ const APP: () = {
                     gr.current = 0.0;
                     gr.increment =
                         1.0 / (sample_freq * settings.gain_ramp_time);
-                }
-                {
+                } else {
                     gr.current = 1.0;
                     gr.increment = 0.0;
                 }
