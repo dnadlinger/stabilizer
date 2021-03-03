@@ -337,49 +337,49 @@ const APP: () = {
             / (hardware::design_parameters::ADC_SAMPLE_TICKS as f32);
         let freq_factor = 2.0 / sample_freq;
 
-        if settings.lock_mode != *c.resources.current_mode {
-            c.resources.iir_ch.lock(|iir| {
-                match settings.lock_mode {
-                    LockMode::Disabled => {
-                        iir[0][0].set_pi(0.0, 0.0, 0.0).unwrap();
-                        iir[1][0].set_pi(0.0, 0.0, 0.0).unwrap();
-                    }
-                    LockMode::RampPassThrough => {
-                        // Gain 5 gives approximately ±10 V when driven using the
-                        // Vescent servo box ramp.
-                        iir[0][0].set_pi(5.0, 0.0, 0.0).unwrap();
-                        iir[1][0].set_pi(0.0, 0.0, 0.0).unwrap();
-                    }
-                    LockMode::Enabled => {
-                        // Negative sign in fast branch to match AOM lock; both PZTs
-                        // have same sign.
-                        let fast_p = {
-                            // KLUDGE: For whatever reason, copysign()-ing the I gain
-                            // doesn't work for signed zero, so lower-bound P gain to
-                            // just above zero.
-                            let mut p = settings.fast_gains.proportional;
-                            if p == 0.0 {
-                                p = f32::MIN_POSITIVE;
-                            }
-                            p
-                        };
-                        iir[0][0]
-                            .set_pi(
-                                -fast_p,
-                                freq_factor * settings.fast_gains.integral,
-                                0.0,
-                            )
-                            .unwrap();
-                        iir[1][0]
-                            .set_pi(
-                                settings.slow_gains.proportional,
-                                freq_factor * settings.slow_gains.integral,
-                                0.0,
-                            )
-                            .unwrap();
-                    }
+        c.resources.iir_ch.lock(|iir| {
+            match settings.lock_mode {
+                LockMode::Disabled => {
+                    iir[0][0].set_pi(0.0, 0.0, 0.0).unwrap();
+                    iir[1][0].set_pi(0.0, 0.0, 0.0).unwrap();
                 }
-            });
+                LockMode::RampPassThrough => {
+                    // Gain 5 gives approximately ±10 V when driven using the
+                    // Vescent servo box ramp.
+                    iir[0][0].set_pi(5.0, 0.0, 0.0).unwrap();
+                    iir[1][0].set_pi(0.0, 0.0, 0.0).unwrap();
+                }
+                LockMode::Enabled => {
+                    // Negative sign in fast branch to match AOM lock; both PZTs
+                    // have same sign.
+                    let fast_p = {
+                        // KLUDGE: For whatever reason, copysign()-ing the I gain
+                        // doesn't work for signed zero, so lower-bound P gain to
+                        // just above zero.
+                        let mut p = settings.fast_gains.proportional;
+                        if p == 0.0 {
+                            p = f32::MIN_POSITIVE;
+                        }
+                        p
+                    };
+                    iir[0][0]
+                        .set_pi(
+                            -fast_p,
+                            freq_factor * settings.fast_gains.integral,
+                            0.0,
+                        )
+                        .unwrap();
+                    iir[1][0]
+                        .set_pi(
+                            settings.slow_gains.proportional,
+                            freq_factor * settings.slow_gains.integral,
+                            0.0,
+                        )
+                        .unwrap();
+                }
+            }
+        });
+        if settings.lock_mode != *c.resources.current_mode {
             c.resources.gain_ramp.lock(|gr| {
                 if settings.lock_mode == LockMode::Enabled
                     && settings.gain_ramp_time > 0.0
