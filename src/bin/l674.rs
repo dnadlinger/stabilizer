@@ -393,7 +393,6 @@ const APP: () = {
                 c.resources.lock_detect.lock(|state| {
                     state.threshold = threshold as i16;
                 });
-                info!("Lock detect threshold: {}", threshold as i16);
             }
 
             let mut reset_samples =
@@ -416,7 +415,6 @@ const APP: () = {
             c.resources.lock_detect.lock(|state| {
                 state.decrement = decrement;
             });
-            info!("Lock detect decrement: {}", decrement);
         }
 
         c.resources.iir_ch.lock(|iir| {
