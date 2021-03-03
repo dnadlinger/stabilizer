@@ -37,7 +37,7 @@ pub enum ADC1Routing {
     SumWithIIR0Output,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Miniconf)]
+#[derive(Clone, Copy, Debug, Deserialize, Miniconf, PartialEq)]
 pub enum LockMode {
     Disabled,
     RampPassThrough,
@@ -65,6 +65,7 @@ pub struct LockDetectConfig {
 #[derive(Debug, Deserialize, Miniconf)]
 pub struct Settings {
     lock_mode: LockMode,
+    gain_ramp_time: f32,
 
     fast_gains: Gains,
 
@@ -82,6 +83,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             lock_mode: LockMode::Disabled,
+            gain_ramp_time: 0.0,
             fast_gains: Default::default(),
             fast_notch: Default::default(),
             fast_notch_enable: false,
@@ -91,6 +93,11 @@ impl Default for Settings {
             lock_detect: Default::default(),
         }
     }
+}
+
+pub struct GainRampState {
+    current: f32,
+    increment: f32,
 }
 
 pub struct LockDetectState {
@@ -115,6 +122,10 @@ const APP: () = {
         iir_state: [[iir::Vec5; IIR_CASCADE_LENGTH]; 2],
         #[init([[iir::IIR::new(1., -SCALE, SCALE); IIR_CASCADE_LENGTH]; 2])]
         iir_ch: [[iir::IIR; IIR_CASCADE_LENGTH]; 2],
+        #[init(LockMode::Disabled)]
+        current_mode: LockMode,
+        #[init(GainRampState { current: 1.0, increment: 0.0 })]
+        gain_ramp: GainRampState,
 
         #[init(ADC1Routing::Ignore)]
         adc1_routing: ADC1Routing,
@@ -201,7 +212,7 @@ const APP: () = {
     ///
     /// Because the ADC and DAC operate at the same rate, these two constraints actually implement
     /// the same time bounds, meeting one also means the other is also met.
-    #[task(binds=DMA1_STR4, resources=[adcs, dacs, iir_state, iir_ch, adc1_routing, lock_detect], priority=2)]
+    #[task(binds=DMA1_STR4, resources=[adcs, dacs, iir_state, iir_ch, adc1_routing, gain_ramp, lock_detect], priority=2)]
     fn process(c: process::Context) {
         let adc_samples = [
             c.resources.adcs.0.acquire_buffer(),
@@ -221,6 +232,7 @@ const APP: () = {
             y as u16 ^ 0x8000
         }
 
+        let gain_ramp = c.resources.gain_ramp;
         for sample_idx in 0..adc_samples[0].len() {
             let adc1_int = adc_samples[1][sample_idx] as i16;
 
@@ -240,7 +252,8 @@ const APP: () = {
 
             // Cascaded PID controllers.
             let adc1 = f32::from(adc1_int);
-            let mut x = f32::from(adc_samples[0][sample_idx] as i16);
+            let mut x = f32::from(adc_samples[0][sample_idx] as i16)
+                * gain_ramp.current;
             if let ADC1Routing::SumWithADC0 = c.resources.adc1_routing {
                 x += adc1;
             }
@@ -264,6 +277,13 @@ const APP: () = {
                     .update(&mut c.resources.iir_state[1][1], y)
             };
             dac_samples[1][sample_idx] = to_dac(y1);
+
+            if gain_ramp.current < 1.0 {
+                gain_ramp.current += gain_ramp.increment;
+                if gain_ramp.current > 1.0 {
+                    gain_ramp.current = 1.0;
+                }
+            }
         }
     }
 
@@ -300,7 +320,7 @@ const APP: () = {
         }
     }
 
-    #[task(priority = 1, resources=[mqtt_interface, afes, iir_ch, adc1_routing, lock_detect])]
+    #[task(priority = 1, resources=[mqtt_interface, afes, iir_ch, current_mode, gain_ramp, adc1_routing, lock_detect])]
     fn settings_update(mut c: settings_update::Context) {
         let settings = &c.resources.mqtt_interface.settings;
 
@@ -310,38 +330,54 @@ const APP: () = {
             / (hardware::design_parameters::ADC_SAMPLE_TICKS as f32);
         let freq_factor = 2.0 / sample_freq;
 
-        c.resources.iir_ch.lock(|iir| {
-            match settings.lock_mode {
-                LockMode::Disabled => {
-                    iir[0][0].set_pi(0.0, 0.0, 0.0).unwrap();
-                    iir[1][0].set_pi(0.0, 0.0, 0.0).unwrap();
+        if settings.lock_mode != *c.resources.current_mode {
+            c.resources.iir_ch.lock(|iir| {
+                match settings.lock_mode {
+                    LockMode::Disabled => {
+                        iir[0][0].set_pi(0.0, 0.0, 0.0).unwrap();
+                        iir[1][0].set_pi(0.0, 0.0, 0.0).unwrap();
+                    }
+                    LockMode::RampPassThrough => {
+                        // Gain 5 gives approximately ±10 V when driven using the
+                        // Vescent servo box ramp.
+                        iir[0][0].set_pi(5.0, 0.0, 0.0).unwrap();
+                        iir[1][0].set_pi(0.0, 0.0, 0.0).unwrap();
+                    }
+                    LockMode::Enabled => {
+                        // Negative sign in fast branch to match AOM lock; both PZTs
+                        // have same sign.
+                        iir[0][0]
+                            .set_pi(
+                                -settings.fast_gains.proportional,
+                                settings.fast_gains.integral,
+                                0.0,
+                            )
+                            .unwrap();
+                        iir[1][0]
+                            .set_pi(
+                                settings.slow_gains.proportional,
+                                settings.slow_gains.integral,
+                                0.0,
+                            )
+                            .unwrap();
+                    }
                 }
-                LockMode::RampPassThrough => {
-                    // Gain 5 gives approximately ±10 V when driven using the
-                    // Vescent servo box ramp.
-                    iir[0][0].set_pi(5.0, 0.0, 0.0).unwrap();
-                    iir[1][0].set_pi(0.0, 0.0, 0.0).unwrap();
+            });
+            c.resources.gain_ramp.lock(|gr| {
+                if settings.lock_mode == LockMode::Enabled
+                    && settings.gain_ramp_time > 0.0
+                {
+                    gr.current = 0.0;
+                    gr.increment =
+                        1.0 / (sample_freq * settings.gain_ramp_time);
                 }
-                LockMode::Enabled => {
-                    // Negative sign in fast branch to match AOM lock; both PZTs
-                    // have same sign.
-                    iir[0][0]
-                        .set_pi(
-                            -settings.fast_gains.proportional,
-                            settings.fast_gains.integral,
-                            0.0,
-                        )
-                        .unwrap();
-                    iir[1][0]
-                        .set_pi(
-                            settings.slow_gains.proportional,
-                            settings.slow_gains.integral,
-                            0.0,
-                        )
-                        .unwrap();
+                {
+                    gr.current = 1.0;
+                    gr.increment = 0.0;
                 }
-            }
-        });
+            });
+        }
+        *c.resources.current_mode = settings.lock_mode;
 
         {
             let threshold =
