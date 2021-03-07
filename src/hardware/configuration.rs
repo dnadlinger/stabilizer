@@ -544,6 +544,10 @@ pub fn setup(
     );
     info!("MAC address: {}", mac_addr);
 
+    if mac_addr != smoltcp::wire::EthernetAddress([0x80, 0x00, 0x10, 0x4d, 0x03, 0x8b]) {
+        panic!("Unexpected MAC address: {}", mac_addr);
+    }
+
     let network_devices = {
         // Configure the ethernet controller
         let (eth_dma, eth_mac) = unsafe {
