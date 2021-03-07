@@ -573,13 +573,13 @@ pub fn setup(
         let store = unsafe { &mut NET_STORE };
 
         store.ip_addrs[0] = smoltcp::wire::IpCidr::new(
-            smoltcp::wire::IpAddress::v4(10, 179, 22, 48),
-            22,
+            smoltcp::wire::IpAddress::v4(10, 255, 6, 176),
+            24,
         );
 
         info!("IP address: {}", store.ip_addrs[0]);
 
-        let default_v4_gw = smoltcp::wire::Ipv4Address::new(10, 179, 23, 254);
+        let default_v4_gw = smoltcp::wire::Ipv4Address::new(10, 255, 6, 254);
         let mut routes =
             smoltcp::iface::Routes::new(&mut store.routes_cache[..]);
         routes.add_default_ipv4_route(default_v4_gw).unwrap();
