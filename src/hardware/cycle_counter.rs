@@ -1,5 +1,7 @@
 use rtic::cyccnt::{Duration, Instant, U32Ext};
 
+use core::cell::RefCell;
+use embedded_time::{clock::Error, fraction::Fraction, Clock};
 use stm32h7xx_hal::time::Hertz;
 
 /// A simple clock for counting elapsed milliseconds.
@@ -62,5 +64,30 @@ impl CycleCounter {
         }
 
         self.ticks
+    }
+}
+
+pub struct CycleCounterClock {
+    pub cycle_counter: RefCell<CycleCounter>,
+}
+
+impl CycleCounterClock {
+    pub fn new(counter: CycleCounter) -> CycleCounterClock {
+        CycleCounterClock {
+            cycle_counter: RefCell::new(counter),
+        }
+    }
+}
+
+impl Clock for CycleCounterClock {
+    type T = u32;
+    const SCALING_FACTOR: Fraction = Fraction::new(1, 1000);
+    fn try_now(&self) -> Result<embedded_time::Instant<Self>, Error> {
+        match self.cycle_counter.try_borrow_mut() {
+            Ok(mut c) => {
+                Ok(embedded_time::Instant::<Self>::new(c.current_ms()))
+            }
+            Err(_) => Err(Error::Unspecified),
+        }
     }
 }

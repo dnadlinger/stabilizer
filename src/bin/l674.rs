@@ -22,7 +22,7 @@ use serde::Deserialize;
 use dsp::iir;
 use embedded_hal::digital::v2::OutputPin;
 use hardware::{
-    Adc0Input, Adc1Input, AfeGain, CycleCounter, Dac0Output, Dac1Output,
+    Adc0Input, Adc1Input, AfeGain, CycleCounterClock, Dac0Output, Dac1Output,
     NetworkStack, AFE0, AFE1,
 };
 
@@ -117,8 +117,7 @@ const APP: () = {
         adcs: (Adc0Input, Adc1Input),
         dacs: (Dac0Output, Dac1Output),
         mqtt_interface:
-            MqttInterface<Settings, NetworkStack, minimq::consts::U256>,
-        clock: CycleCounter,
+            MqttInterface<Settings, NetworkStack, minimq::consts::U256, CycleCounterClock>,
 
         // Format: iir_state[ch][cascade-no][coeff]
         #[init([[[0.; 5]; IIR_CASCADE_LENGTH]; 2])]
@@ -152,6 +151,7 @@ const APP: () = {
                     broker,
                     "stabilizer674",
                     stabilizer.net.stack,
+                    CycleCounterClock::new(stabilizer.cycle_counter)
                 )
                 .unwrap()
             };
@@ -197,7 +197,6 @@ const APP: () = {
             afes: stabilizer.afes,
             adcs: stabilizer.adcs,
             dacs: stabilizer.dacs,
-            clock: stabilizer.cycle_counter,
             lock_detect,
             aux_ttl_out,
         }
@@ -294,18 +293,19 @@ const APP: () = {
         }
     }
 
-    #[idle(resources=[mqtt_interface, clock], spawn=[settings_update])]
+    #[idle(resources=[mqtt_interface], spawn=[settings_update])]
     fn idle(mut c: idle::Context) -> ! {
         info!("Starting idle task...");
 
         c.spawn.settings_update().unwrap();
         info!("Initial settings written.");
 
-        let clock = c.resources.clock;
-
         loop {
             let sleep = c.resources.mqtt_interface.lock(|interface| {
-                !interface.network_stack().poll(clock.current_ms())
+                let now_ms = interface.client(|c| {
+                    c.clock.cycle_counter.borrow_mut().current_ms()
+                });
+                !interface.network_stack().poll(now_ms)
             });
 
             match c

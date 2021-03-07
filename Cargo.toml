@@ -37,6 +37,7 @@ serde = { version = "1.0", features = ["derive"], default-features = false }
 heapless = { version = "0.5", features = ["serde"] }
 cortex-m-rtic = "0.5.6"
 embedded-hal = "0.2.4"
+embedded-time = "0.10.1"
 nb = "1.0.0"
 asm-delay = "0.9.0"
 enum-iterator = "0.6.0"
@@ -48,12 +49,12 @@ miniconf = "0.1"
 generic-array = "0.14"
 
 [patch.crates-io.miniconf]
-git = "https://github.com/quartiq/miniconf.git"
-branch = "develop"
+git = "https://github.com/dnadlinger/miniconf.git"
+branch = "feature/minimq-keepalive"
 
-[patch.crates-io.minimq]
-git = "https://github.com/quartiq/minimq.git"
-branch = "master"
+[patch.crates-io.smoltcp-nal]
+git = "https://github.com/dnadlinger/smoltcp-nal.git"
+branch = "initial-port-offset"
 
 [patch.crates-io.serde-json-core]
 git = "https://github.com/rust-embedded-community/serde-json-core.git"

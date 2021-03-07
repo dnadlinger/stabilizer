@@ -203,7 +203,7 @@ dependencies = [
 [[package]]
 name = "derive_miniconf"
 version = "0.1.0"
-source = "git+https://github.com/quartiq/miniconf.git?branch=develop#394d0634a9622e43a55850afc34eb4695ecababa"
+source = "git+https://github.com/dnadlinger/miniconf.git?branch=feature/minimq-keepalive#711bf7d43f73d20301dfd125e6b8e51d08436fd0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -258,6 +258,15 @@ dependencies = [
  "heapless 0.5.6",
  "nb 1.0.0",
  "no-std-net",
+]
+
+[[package]]
+name = "embedded-time"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f85ab0d224a6c70f11426a9f04d5f26d250605b80df8fbed197e49d4454f58d7"
+dependencies = [
+ "num",
 ]
 
 [[package]]
@@ -361,9 +370,9 @@ dependencies = [
 
 [[package]]
 name = "indexmap"
-version = "1.6.1"
+version = "1.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fb1fa934250de4de8aef298d81c729a7d33d8c239daa3a7575e6b92bfc7313b"
+checksum = "824845a0bf897a9042383849b02c1bc219c2383772efcd5c6f9766fa4b81aef3"
 dependencies = [
  "autocfg",
  "hashbrown",
@@ -371,9 +380,9 @@ dependencies = [
 
 [[package]]
 name = "libc"
-version = "0.2.86"
+version = "0.2.88"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7282d924be3275cec7f6756ff4121987bc6481325397dde6ba3e7802b1a8b1c"
+checksum = "03b07a082330a35e43f63177cc01689da34fbffa0105e1246cf0311472cac73a"
 
 [[package]]
 name = "libm"
@@ -416,10 +425,11 @@ dependencies = [
 [[package]]
 name = "miniconf"
 version = "0.1.0"
-source = "git+https://github.com/quartiq/miniconf.git?branch=develop#394d0634a9622e43a55850afc34eb4695ecababa"
+source = "git+https://github.com/dnadlinger/miniconf.git?branch=feature/minimq-keepalive#711bf7d43f73d20301dfd125e6b8e51d08436fd0"
 dependencies = [
  "derive_miniconf",
- "heapless 0.5.6",
+ "embedded-time",
+ "heapless 0.6.1",
  "minimq",
  "serde",
  "serde-json-core",
@@ -428,13 +438,14 @@ dependencies = [
 [[package]]
 name = "minimq"
 version = "0.2.0"
-source = "git+https://github.com/quartiq/minimq.git?branch=master#a89a6f11d0d1f63114fb15f676022eb4fe904f56"
+source = "git+https://github.com/dnadlinger/minimq.git?branch=feature/keepalive#d7533f040a795979dc0cba45df7f6e0c55a50ddd"
 dependencies = [
  "bit_field",
  "embedded-nal",
+ "embedded-time",
  "enum-iterator",
  "generic-array 0.14.4",
- "heapless 0.5.6",
+ "heapless 0.6.1",
 ]
 
 [[package]]
@@ -653,6 +664,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ryu"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71d301d4193d031abdd79ff7e3dd721168a9572ef3fe51a1517aba235bd8f86e"
+
+[[package]]
 name = "semver"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -669,9 +686,9 @@ checksum = "388a1df253eca08550bef6c72392cfe7c30914bf41df5269b68cbd6ff8f570a3"
 
 [[package]]
 name = "serde"
-version = "1.0.123"
+version = "1.0.124"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92d5161132722baa40d802cc70b15262b98258453e85e5d1d365c757c73869ae"
+checksum = "bd761ff957cb2a45fbb9ab3da6512de9de55872866160b23c25f1a841e99d29f"
 dependencies = [
  "serde_derive",
 ]
@@ -679,17 +696,18 @@ dependencies = [
 [[package]]
 name = "serde-json-core"
 version = "0.2.0"
-source = "git+https://github.com/rust-embedded-community/serde-json-core.git?branch=master#ee06ac91bc43b72450a92198a00d9e5c5b9946d2"
+source = "git+https://github.com/rust-embedded-community/serde-json-core.git?branch=master#c3460e6a6d2146199c083449694b6c08540bc7ea"
 dependencies = [
  "heapless 0.5.6",
+ "ryu",
  "serde",
 ]
 
 [[package]]
 name = "serde_derive"
-version = "1.0.123"
+version = "1.0.124"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9391c295d64fc0abb2c556bad848f33cb8296276b1ad2677d1ae1ace4f258f31"
+checksum = "1800f7693e94e186f5e25a28291ae1570da908aff7d97a095dec1e56ff99069b"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -710,11 +728,10 @@ dependencies = [
 [[package]]
 name = "smoltcp-nal"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4e5aeb4818706fd74c35917692008d29a5314483c8180300a582253718ce57a"
+source = "git+https://github.com/dnadlinger/smoltcp-nal.git?branch=initial-port-offset#e2d60db86f39006a6133d36338967462a7356405"
 dependencies = [
  "embedded-nal",
- "heapless 0.5.6",
+ "heapless 0.6.1",
  "smoltcp",
 ]
 
@@ -730,6 +747,7 @@ dependencies = [
  "cortex-m-rtic",
  "dsp",
  "embedded-hal",
+ "embedded-time",
  "enum-iterator",
  "generic-array 0.14.4",
  "heapless 0.5.6",
@@ -765,7 +783,7 @@ dependencies = [
 [[package]]
 name = "stm32h7xx-hal"
 version = "0.8.0"
-source = "git+https://github.com/stm32-rs/stm32h7xx-hal?branch=master#4ca09fa94af0fed8084633c142767cf6515ed8de"
+source = "git+https://github.com/stm32-rs/stm32h7xx-hal?branch=master#5c0544023ed7c60210d879e7e32e19ca6b3c0982"
 dependencies = [
  "bare-metal 1.0.0",
  "cast",
@@ -782,9 +800,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "1.0.60"
+version = "1.0.62"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c700597eca8a5a762beb35753ef6b94df201c81cca676604f547495a0d7f0081"
+checksum = "123a78a3596b24fee53a6464ce52d8ecbf62241e6294c7e7fe12086cd161f512"
 dependencies = [
  "proc-macro2",
  "quote",
