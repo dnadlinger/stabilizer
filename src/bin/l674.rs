@@ -116,8 +116,12 @@ const APP: () = {
         afes: (AFE0, AFE1),
         adcs: (Adc0Input, Adc1Input),
         dacs: (Dac0Output, Dac1Output),
-        mqtt_interface:
-            MqttInterface<Settings, NetworkStack, minimq::consts::U256, CycleCounterClock>,
+        mqtt_interface: MqttInterface<
+            Settings,
+            NetworkStack,
+            minimq::consts::U256,
+            CycleCounterClock,
+        >,
 
         // Format: iir_state[ch][cascade-no][coeff]
         #[init([[[0.; 5]; IIR_CASCADE_LENGTH]; 2])]
@@ -151,7 +155,7 @@ const APP: () = {
                     broker,
                     "stabilizer674",
                     stabilizer.net.stack,
-                    CycleCounterClock::new(stabilizer.cycle_counter)
+                    CycleCounterClock::new(stabilizer.cycle_counter),
                 )
                 .unwrap()
             };
