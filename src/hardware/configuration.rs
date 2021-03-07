@@ -622,11 +622,7 @@ pub fn setup(
         let port_offset: u16 = rng.gen().unwrap();
 
         NetworkDevices {
-            stack: smoltcp_nal::NetworkStack::new(
-                interface,
-                sockets,
-                Some(port_offset),
-            ),
+            stack: smoltcp_nal::NetworkStack::new(interface, sockets, port_offset),
             phy: lan8742a,
         }
     };
