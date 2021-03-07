@@ -12,6 +12,8 @@ use stm32h7xx_hal as hal;
 
 use stabilizer::hardware;
 
+use core::fmt::Write;
+use heapless::{consts, String};
 use log::{info, warn};
 use miniconf::{
     embedded_nal::{IpAddr, Ipv4Addr},
@@ -19,7 +21,7 @@ use miniconf::{
 };
 use serde::Deserialize;
 
-use dsp::iir;
+use dsp::{iir, Lowpass};
 use embedded_hal::digital::v2::OutputPin;
 use hardware::{
     Adc0Input, Adc1Input, AfeGain, CycleCounterClock, Dac0Output, Dac1Output,
@@ -29,6 +31,15 @@ use hardware::{
 const SCALE: f32 = i16::MAX as _;
 
 const IIR_CASCADE_LENGTH: usize = 2;
+
+/// Amount of bits to shift ADC1 samples before feeding into averaging low-pass filter.
+/// 15 might be possible also (would need to look more closely at saturation behaviour).
+const ADC1_LOWPASS_SHIFT: u8 = 14;
+
+/// log2 of time constant of ADC1 lowpass filter in sample units, about 10 ms.
+const ADC1_LOWPASS_LOG2_TC: u8 = 13;
+
+const ADC1_FILTERED_TOPIC: &str = "dt/sinara/stabilizer/l674/read_adc1_filtered";
 
 #[derive(Clone, Copy, Debug, Deserialize, Miniconf)]
 pub enum ADC1Routing {
@@ -106,7 +117,8 @@ pub struct GainRampState {
 pub struct LockDetectState {
     decrement: u32,
     counter: u32,
-    threshold: i16, // in units of ADC1 codes
+    threshold: i16,
+    ///< in units of ADC1 codes
     pin: hal::gpio::gpiod::PD3<hal::gpio::Output<hal::gpio::PushPull>>,
 }
 
@@ -135,6 +147,10 @@ const APP: () = {
 
         #[init(ADC1Routing::Ignore)]
         adc1_routing: ADC1Routing,
+
+        adc1_filter: Lowpass<consts::U4>,
+        #[init(0)]
+        adc1_filtered: i32,
 
         lock_detect: LockDetectState,
 
@@ -171,7 +187,7 @@ const APP: () = {
         // We hard-code gains here to save some complexity w.r.t. converting the
         // lock detect threshold from volts to codes.
         stabilizer.afes.0.set_gain(AfeGain::G1);
-        stabilizer.afes.1.set_gain(AfeGain::G1);
+        stabilizer.afes.1.set_gain(AfeGain::G10);
 
         // Enable ADC/DAC events
         stabilizer.adcs.0.start();
@@ -201,6 +217,7 @@ const APP: () = {
             afes: stabilizer.afes,
             adcs: stabilizer.adcs,
             dacs: stabilizer.dacs,
+            adc1_filter: Lowpass::default(),
             lock_detect,
             aux_ttl_out,
         }
@@ -222,7 +239,7 @@ const APP: () = {
     ///
     /// Because the ADC and DAC operate at the same rate, these two constraints actually implement
     /// the same time bounds, meeting one also means the other is also met.
-    #[task(binds=DMA1_STR4, resources=[adcs, dacs, iir_state, iir_ch, adc1_routing, gain_ramp, lock_detect], priority=2)]
+    #[task(binds=DMA1_STR4, resources=[adcs, dacs, iir_state, iir_ch, adc1_routing, adc1_filter, adc1_filtered, gain_ramp, lock_detect], priority=2)]
     fn process(c: process::Context) {
         let adc_samples = [
             c.resources.adcs.0.acquire_buffer(),
@@ -245,6 +262,10 @@ const APP: () = {
         let gain_ramp = c.resources.gain_ramp;
         for sample_idx in 0..adc_samples[0].len() {
             let adc1_int = adc_samples[1][sample_idx] as i16;
+            *c.resources.adc1_filtered = c.resources.adc1_filter.update(
+                (adc1_int as i32) << ADC1_LOWPASS_SHIFT,
+                ADC1_LOWPASS_LOG2_TC,
+            );
 
             {
                 // Lock detect.
@@ -297,13 +318,15 @@ const APP: () = {
         }
     }
 
-    #[idle(resources=[mqtt_interface], spawn=[settings_update])]
+    #[idle(resources=[mqtt_interface, adc1_filtered], spawn=[settings_update])]
     fn idle(mut c: idle::Context) -> ! {
         info!("Starting idle task...");
 
         c.spawn.settings_update().unwrap();
         info!("Initial settings written.");
 
+        let mut adc1_filtered = c.resources.adc1_filtered;
+        let mut subscribed = false;
         loop {
             let sleep = c.resources.mqtt_interface.lock(|interface| {
                 let now_ms = interface.client(|c| {
@@ -312,17 +335,70 @@ const APP: () = {
                 !interface.network_stack().poll(now_ms)
             });
 
-            match c
-                .resources
-                .mqtt_interface
-                .lock(|interface| interface.update())
-            {
+            match c.resources.mqtt_interface.lock(|interface| {
+                if !subscribed {
+                    interface.client(|c| match c.subscribe(ADC1_FILTERED_TOPIC, &[]) {
+                        Ok(_) => {subscribed = true;},
+                        Err(_) => {}
+                    })
+                }
+                interface.update_or_process(
+                    |client, topic, _message, properties| {
+                        let mut payload_buf: String<consts::U64> =
+                            String::new();
+                        let payload = match topic {
+                            ADC1_FILTERED_TOPIC => {
+                                let filtered_int: i32 =
+                                    adc1_filtered.lock(|a| *a);
+                                // 16 signed ADC bits (set to 1V full-range).
+                                const FULL_RANGE: i32 =
+                                    1 << (15 + ADC1_LOWPASS_SHIFT);
+                                write!(
+                                    &mut payload_buf,
+                                    "{}",
+                                    (filtered_int as f32) / (FULL_RANGE as f32)
+                                )
+                                .unwrap();
+                                payload_buf.as_bytes()
+                            }
+                            _ => "Unexpected topic".as_bytes(),
+                        };
+                        let response_topic = if let Some(
+                            minimq::Property::ResponseTopic(topic),
+                        ) =
+                            properties.iter().find(|&prop| {
+                                matches!(
+                                    *prop,
+                                    minimq::Property::ResponseTopic(_)
+                                )
+                            }) {
+                            topic
+                        } else {
+                            "dt/sinara/stabilizer/l674/log"
+                        };
+                        client
+                            .publish(
+                                response_topic,
+                                payload,
+                                minimq::QoS::AtMostOnce,
+                                &[],
+                            )
+                            .ok();
+                    },
+                )
+            }) {
                 Ok(updated) => {
                     if updated {
                         c.spawn.settings_update().unwrap()
                     } else if sleep {
                         cortex_m::asm::wfi();
                     }
+                }
+                Err(miniconf::MqttError::Disconnected) => {
+                    if subscribed {
+                        warn!("MQTT broker connection lost.");
+                    }
+                    subscribed = false;
                 }
                 Err(e) => {
                     warn!("Miniconf update failure: {:?}", e)
@@ -400,8 +476,7 @@ const APP: () = {
         *c.resources.current_mode = settings.lock_mode;
 
         {
-            let threshold =
-                settings.lock_detect.adc1_threshold / 10.0 * 32768.0;
+            let threshold = settings.lock_detect.adc1_threshold / 32768.0;
             if threshold < -32768.0 || threshold > 32767.0 {
                 warn!("Ignoring invalid lock detect threshold: {}", threshold);
             } else {
