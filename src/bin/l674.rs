@@ -476,7 +476,7 @@ const APP: () = {
         *c.resources.current_mode = settings.lock_mode;
 
         {
-            let threshold = settings.lock_detect.adc1_threshold / 32768.0;
+            let threshold = settings.lock_detect.adc1_threshold * 32768.0;
             if threshold < -32768.0 || threshold > 32767.0 {
                 warn!("Ignoring invalid lock detect threshold: {}", threshold);
             } else {
