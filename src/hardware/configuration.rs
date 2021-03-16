@@ -153,6 +153,16 @@ pub fn setup(
     let gpiof = device.GPIOF.split(ccdr.peripheral.GPIOF);
     let mut gpiog = device.GPIOG.split(ccdr.peripheral.GPIOG);
 
+    let mut fp_led_0 = gpiod.pd5.into_push_pull_output();
+    let mut fp_led_1 = gpiod.pd6.into_push_pull_output();
+    let mut fp_led_2 = gpiog.pg4.into_push_pull_output();
+    let mut fp_led_3 = gpiod.pd12.into_push_pull_output();
+
+    fp_led_0.set_low().unwrap();
+    fp_led_1.set_low().unwrap();
+    fp_led_2.set_low().unwrap();
+    fp_led_3.set_low().unwrap();
+
     #[cfg(feature = "uart-log")]
     {
         let uart = {
@@ -635,15 +645,6 @@ pub fn setup(
         }
     };
 
-    let mut fp_led_0 = gpiod.pd5.into_push_pull_output();
-    let mut fp_led_1 = gpiod.pd6.into_push_pull_output();
-    let mut fp_led_2 = gpiog.pg4.into_push_pull_output();
-    let mut fp_led_3 = gpiod.pd12.into_push_pull_output();
-
-    fp_led_0.set_low().unwrap();
-    fp_led_1.set_low().unwrap();
-    fp_led_2.set_low().unwrap();
-    fp_led_3.set_low().unwrap();
 
     // Measure the Pounder PGOOD output to detect if pounder is present on Stabilizer.
     let pounder_pgood = gpiob.pb13.into_pull_down_input();
