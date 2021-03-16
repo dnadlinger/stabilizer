@@ -203,7 +203,7 @@ dependencies = [
 [[package]]
 name = "derive_miniconf"
 version = "0.1.0"
-source = "git+https://github.com/dnadlinger/miniconf.git?branch=feature/handle-unexpected#9ce8c298bbaa8aa150c6e517ea5f3d48433c783a"
+source = "git+https://github.com/dnadlinger/miniconf.git?branch=l674#48e342363a992a650b6bf8f134a1ccb247bbba8c"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -425,7 +425,7 @@ dependencies = [
 [[package]]
 name = "miniconf"
 version = "0.1.0"
-source = "git+https://github.com/dnadlinger/miniconf.git?branch=feature/handle-unexpected#9ce8c298bbaa8aa150c6e517ea5f3d48433c783a"
+source = "git+https://github.com/dnadlinger/miniconf.git?branch=l674#48e342363a992a650b6bf8f134a1ccb247bbba8c"
 dependencies = [
  "derive_miniconf",
  "embedded-time",

@@ -50,7 +50,7 @@ generic-array = "0.14"
 
 [patch.crates-io.miniconf]
 git = "https://github.com/dnadlinger/miniconf.git"
-branch = "feature/handle-unexpected"
+branch = "l674"
 
 [patch.crates-io.smoltcp-nal]
 git = "https://github.com/dnadlinger/smoltcp-nal.git"

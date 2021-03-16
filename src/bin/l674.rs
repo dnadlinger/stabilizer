@@ -381,12 +381,22 @@ const APP: () = {
                         } else {
                             "dt/sinara/stabilizer/l674/log"
                         };
+
+                        // Send back any correlation data with the response.
+                        let response_properties = properties
+                            .iter()
+                            .find(|&prop| {
+                                matches!(*prop, minimq::Property::CorrelationData(_))
+                            })
+                            .map(core::slice::from_ref)
+                            .unwrap_or(&[]);
+
                         client
                             .publish(
                                 response_topic,
                                 payload,
                                 minimq::QoS::AtMostOnce,
-                                &[],
+                                response_properties,
                             )
                             .ok();
                     },
