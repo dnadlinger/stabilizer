@@ -39,7 +39,8 @@ const ADC1_LOWPASS_SHIFT: u8 = 14;
 /// log2 of time constant of ADC1 lowpass filter in sample units, about 10 ms.
 const ADC1_LOWPASS_LOG2_TC: u8 = 13;
 
-const ADC1_FILTERED_TOPIC: &str = "dt/sinara/stabilizer/l674/read_adc1_filtered";
+const ADC1_FILTERED_TOPIC: &str =
+    "dt/sinara/stabilizer/l674/read_adc1_filtered";
 
 #[derive(Clone, Copy, Debug, Deserialize, Miniconf)]
 pub enum ADC1Routing {
@@ -337,9 +338,13 @@ const APP: () = {
 
             match c.resources.mqtt_interface.lock(|interface| {
                 if !subscribed {
-                    interface.client(|c| match c.subscribe(ADC1_FILTERED_TOPIC, &[]) {
-                        Ok(_) => {subscribed = true;},
-                        Err(_) => {}
+                    interface.client(|c| {
+                        match c.subscribe(ADC1_FILTERED_TOPIC, &[]) {
+                            Ok(_) => {
+                                subscribed = true;
+                            }
+                            Err(_) => {}
+                        }
                     })
                 }
                 interface.update_or_process(
